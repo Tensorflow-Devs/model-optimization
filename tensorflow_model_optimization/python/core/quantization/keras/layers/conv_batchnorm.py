@@ -47,14 +47,8 @@ class _ConvBatchNormMixin(object):
     if not self.is_quantized:
       return
 
-    self._weight_min_var = self.add_variable(  # pylint: disable=protected-access
-        'weight_min',
-        initializer=initializers.Constant(-6.0),
-        trainable=False)
-    self._weight_max_var = self.add_variable(  # pylint: disable=protected-access
-        'weight_max',
-        initializer=initializers.Constant(6.0),
-        trainable=False)
+    self._weight_min_var, self._weight_max_var = self.weight_quantizer.build(
+        self.weights[0].shape, 'weight', self)
 
     self.optimizer_step = self.add_weight(
         'optimizer_step',
@@ -267,10 +261,10 @@ class _ConvBatchNorm2D(_ConvBatchNormMixin, convolutional.Conv2D):
     if self.is_quantized:
       # TODO(b/142132535): update when we move to new quantization scheme.
       self.weight_quantizer = quantizers.LastValueQuantizer(
-          num_bits=8, per_axis=False, symmetric=False)
+          num_bits=8, per_axis=False, symmetric=True, narrow_range=True)
 
       self.activation_quantizer = quantizers.MovingAverageQuantizer(
-          num_bits=8, per_axis=False, symmetric=False)
+          num_bits=8, per_axis=False, symmetric=False, narrow_range=False)
 
   def build(self, input_shape):
     # responsible for trainable self.kernel weights
@@ -450,10 +444,10 @@ class _DepthwiseConvBatchNorm2D(_ConvBatchNormMixin,
     self.is_quantized = is_quantized
     if self.is_quantized:
       self.weight_quantizer = quantizers.LastValueQuantizer(
-          num_bits=8, per_axis=False, symmetric=False)
+          num_bits=8, per_axis=False, symmetric=True, narrow_range=True)
 
       self.activation_quantizer = quantizers.MovingAverageQuantizer(
-          num_bits=8, per_axis=False, symmetric=False)
+          num_bits=8, per_axis=False, symmetric=False, narrow_range=False)
 
   def build(self, input_shape):
     # responsible for trainable self.kernel weights

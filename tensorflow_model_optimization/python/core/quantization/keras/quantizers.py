@@ -24,6 +24,8 @@ from __future__ import print_function
 import abc
 import six
 
+from tensorflow.python.keras import initializers
+
 from tensorflow_model_optimization.python.core.quantization.keras import quant_ops
 
 
@@ -31,11 +33,18 @@ from tensorflow_model_optimization.python.core.quantization.keras import quant_o
 class Quantizer(object):
   """ABC interface which contains logic to quantize a tensor."""
 
-  # TODO(pulkitb): Figure out a clean way to handle TF variables in Quantizer.
-  # Currently, Quantizers need to create variables for tracking min/max values.
-  # However, variables in Keras are a property of the layer and need to be
-  # serialized/deserialized along with the layer.
-  # For now, passing in variables as additional **kwargs in `__call__`.
+  @abc.abstractmethod
+  def build(self, tensor_shape, name, layer):
+    """Constructs the weights required by the quantizer.
+
+    Args:
+      tensor_shape: Shape of tensor which needs to be quantized.
+      name: Name of tensor.
+      layer: Keras layer which is quantizing the tensors. The layer is needed
+        to construct the weights, and is also the owner of the weights.
+
+    Returns: List of constructed weights
+    """
 
   @abc.abstractmethod
   def __call__(self, inputs, step, training, **kwargs):
@@ -70,12 +79,21 @@ class Quantizer(object):
     return cls(**config)
 
 
-class LastValueQuantizer(Quantizer):
+class _QuantizeHelper(object):
+
+  def _add_range_weights(self, layer, name):
+    min_weight = layer.add_weight(
+        name + '_min', initializer=initializers.Constant(-6.0), trainable=False)
+    max_weight = layer.add_weight(
+        name + '_max', initializer=initializers.Constant(6.0), trainable=False)
+
+    return [min_weight, max_weight]
+
+
+class LastValueQuantizer(Quantizer, _QuantizeHelper):
   """Quantize tensor based on range the last batch of values."""
 
-  # TODO(pulkitb): Decide and change num_bits to num_fixedpoint_values.
-
-  def __init__(self, num_bits, per_axis, symmetric):
+  def __init__(self, num_bits, per_axis, symmetric, narrow_range):
     """Construct a LastValueQuantizer.
 
     Args:
@@ -83,10 +101,17 @@ class LastValueQuantizer(Quantizer):
       per_axis: Whether to apply per_axis quantization.
       symmetric: If true, use symmetric quantization limits instead of training
         the minimum and maximum of each quantization range separately.
+      narrow_range: In case of 8 bits, narrow_range nudges the quantized range
+        to be [-127, 127] instead of [-128, 127]. This ensures symmetric
+        range has 0 as the centre.
     """
     self.num_bits = num_bits
     self.per_axis = per_axis
     self.symmetric = symmetric
+    self.narrow_range = narrow_range
+
+  def build(self, tensor_shape, name, layer):
+    return self._add_range_weights(layer, name)
 
   def __call__(self, inputs, step, training, **kwargs):
     """Quantize tensor.
@@ -108,8 +133,7 @@ class LastValueQuantizer(Quantizer):
         num_bits=self.num_bits,
         per_channel=self.per_axis,
         symmetric=self.symmetric,
-        narrow_range=True
-        # TODO(pulkitb): Figure out a clean way to use name_prefix here.
+        narrow_range=self.narrow_range
     )
 
   def get_config(self):
@@ -117,6 +141,7 @@ class LastValueQuantizer(Quantizer):
         'num_bits': self.num_bits,
         'per_axis': self.per_axis,
         'symmetric': self.symmetric,
+        'narrow_range': self.narrow_range
     }
 
   def __eq__(self, other):
@@ -125,16 +150,17 @@ class LastValueQuantizer(Quantizer):
 
     return (self.num_bits == other.num_bits and
             self.per_axis == other.per_axis and
-            self.symmetric == other.symmetric)
+            self.symmetric == other.symmetric and
+            self.narrow_range == other.narrow_range)
 
   def __ne__(self, other):
     return not self.__eq__(other)
 
 
-class MovingAverageQuantizer(Quantizer):
+class MovingAverageQuantizer(Quantizer, _QuantizeHelper):
   """Quantize tensor based on a moving average of values across batches."""
 
-  def __init__(self, num_bits, per_axis, symmetric):
+  def __init__(self, num_bits, per_axis, symmetric, narrow_range):
     """Construct a LastValueQuantizer.
 
     Args:
@@ -142,10 +168,17 @@ class MovingAverageQuantizer(Quantizer):
       per_axis: Whether to apply per_axis quantization.
       symmetric: If true, use symmetric quantization limits instead of training
         the minimum and maximum of each quantization range separately.
+      narrow_range: In case of 8 bits, narrow_range nudges the quantized range
+        to be [-127, 127] instead of [-128, 127]. This ensures symmetric
+        range has 0 as the centre.
     """
     self.num_bits = num_bits
     self.per_axis = per_axis
     self.symmetric = symmetric
+    self.narrow_range = narrow_range
+
+  def build(self, tensor_shape, name, layer):
+    return self._add_range_weights(layer, name)
 
   def __call__(self, inputs, step, training, **kwargs):
     """Quantize tensor.
@@ -168,8 +201,7 @@ class MovingAverageQuantizer(Quantizer):
         num_bits=self.num_bits,
         per_channel=self.per_axis,
         symmetric=self.symmetric,
-        narrow_range=False,
-        # TODO(pulkitb): Figure out a clean way to use name_prefix here.
+        narrow_range=self.narrow_range,
     )
 
   def get_config(self):
@@ -177,6 +209,7 @@ class MovingAverageQuantizer(Quantizer):
         'num_bits': self.num_bits,
         'per_axis': self.per_axis,
         'symmetric': self.symmetric,
+        'narrow_range': self.narrow_range
     }
 
   def __eq__(self, other):
@@ -185,7 +218,8 @@ class MovingAverageQuantizer(Quantizer):
 
     return (self.num_bits == other.num_bits and
             self.per_axis == other.per_axis and
-            self.symmetric == other.symmetric)
+            self.symmetric == other.symmetric and
+            self.narrow_range == other.narrow_range)
 
   def __ne__(self, other):
     return not self.__eq__(other)
